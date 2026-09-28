@@ -2,97 +2,118 @@
 
 static SPI_HandleTypeDef *as5048a_spi = NULL;
 
-static uint16_t AS5048A_CalcParity(uint16_t value)
+#define SPI_WAIT_LOOPS 20000u
+
+static inline uint16_t CalcParityBit(uint16_t v)
 {
-    uint8_t count = 0;
-    for(int i = 0; i < 16; i++)
-    {
-        if(value & (1 << i))
-        {
-            count++;
-        }
-    }
-    
-    return (count & 1) ? 0x8000 : 0x0000;
+    return (__builtin_popcount(v) & 1) ? 0x8000 : 0x0000;
 }
 
-static uint16_t AS5048A_BuildReadCommand(uint16_t address)
+static uint16_t BuildReadCommand(uint16_t address)
 {
     uint16_t cmd = 0x4000 | (address & 0x3FFF);
-    cmd |= AS5048A_CalcParity(cmd);
-    return cmd;
+    return cmd | CalcParityBit(cmd);
 }
 
-static void AS5048A_CS_Low(void)
+static inline void Delay350ns(void)
 {
-    HAL_GPIO_WritePin(AS5048A_CS_PORT, AS5048A_CS_PIN, GPIO_PIN_RESET);
+    for(volatile int i = 0; i < 12; i++)
+    {
+        __NOP();
+    }
 }
 
-static void AS5048A_CS_High(void)
+static inline void CS_Low(void)
 {
-    HAL_GPIO_WritePin(AS5048A_CS_PORT, AS5048A_CS_PIN, GPIO_PIN_SET);
+    AS5048A_CS_PORT->BSRR = ((uint32_t)AS5048A_CS_PIN) << 16;
+    Delay350ns();
 }
 
+static inline void CS_High(void)
+{
+    AS5048A_CS_PORT->BSRR = AS5048A_CS_PIN; 
+    Delay350ns();
+}
 
-/* Init function*/
-void AS5048A_Init(SPI_HandleTypeDef *hspi)
+uint8_t AS5048A_Init(SPI_HandleTypeDef *hspi)
 {
     as5048a_spi = hspi;
-    AS5048A_CS_High();
+    CS_High();
+    if (hspi->Init.DataSize != SPI_DATASIZE_16BIT) return 1;
+    __HAL_SPI_ENABLE(hspi);
+    return 0;
 }
 
-/* Communication 1 frame 16-bit*/
-static uint16_t AS5048A_Transfer(uint16_t tx_data)
+static uint16_t Transfer(uint16_t tx)
 {
-    uint16_t rx_data = 0;
+    SPI_TypeDef *spi = as5048a_spi->Instance;
+    uint32_t t;
+    uint16_t rx = AS5048A_ERR;
+ 
+    if (spi->SR & SPI_SR_RXNE) { (void)spi->DR; }   /* xả dữ liệu cũ */
+ 
+    CS_Low();
+ 
+    t = SPI_WAIT_LOOPS;
+    while (!(spi->SR & SPI_SR_TXE) && --t) {}
+    if (t) {
+        spi->DR = tx;
+        t = SPI_WAIT_LOOPS;
+        while (!(spi->SR & SPI_SR_RXNE) && --t) {}
+        if (t) rx = (uint16_t)spi->DR;
+        t = SPI_WAIT_LOOPS;
+        while ((spi->SR & SPI_SR_BSY) && --t) {}
+    }
+ 
+    CS_High();
+    return rx;
+}
 
-    /*Low*/
-    AS5048A_CS_Low();
-
-    /*Transmit and receive 16-bit*/
-    HAL_SPI_TransmitReceive(as5048a_spi, (uint8_t*)&tx_data, (uint8_t*)&rx_data, 1,10);
-
-    /*High*/
-    AS5048A_CS_High();
-    
-    return rx_data;
-
+static uint16_t DecodeResponse(uint16_t resp)
+{
+    if (resp == AS5048A_ERR)          return AS5048A_ERR;   /* timeout */
+    if (resp & 0x4000)                return AS5048A_ERR;   /* cờ lỗi */
+    if (__builtin_popcount(resp) & 1) return AS5048A_ERR;   /* sai parity (even) */
+    return resp & 0x3FFF;
 }
 
 uint16_t AS5048A_ReadRaw(void)
 {
-    uint16_t cmd = AS5048A_BuildReadCommand(AS5048A_CMD_ANGLE);
-
-    //Request to read angle at frame 1
-    AS5048A_Transfer(cmd);
-
-    //At frame 2, request NOP to receive frame 1 's result
-    uint16_t response = AS5048A_Transfer (0x0000);
-
-    if(response & 0x4000)
-    {
-        return 0xFFFF;
-    }
-
-    return (response & 0x3FFF);
+    Transfer(BuildReadCommand(AS5048A_CMD_ANGLE));   /* frame 1: gửi lệnh */
+    return DecodeResponse(Transfer(0x0000));         /* frame 2: NOP, nhận kết quả frame 1 */
+}
+ 
+void AS5048A_Prime(void)
+{
+    Transfer(BuildReadCommand(AS5048A_CMD_ANGLE));
 }
 
-float AS5048A_ReadAngle(void) 
+
+uint16_t AS5048A_ReadFast(void)
+{
+    return DecodeResponse(Transfer(BuildReadCommand(AS5048A_CMD_ANGLE)));
+}
+ 
+float AS5048A_ReadAngle(void)
 {
     uint16_t raw = AS5048A_ReadRaw();
-    if (raw == 0xFFFF) 
-    {
-        return -1.0f; 
-    }
+    if (raw == AS5048A_ERR) return -1.0f;
     return (float)raw * 360.0f / 16384.0f;
 }
-
+ 
 float AS5048A_ReadRad(void)
 {
     uint16_t raw = AS5048A_ReadRaw();
-    if(raw == 0xFFFF)
-    {
-        return -1.0f;
-    }
+    if (raw == AS5048A_ERR) return -1.0f;
     return (float)raw * 6.28318530718f / 16384.0f;
 }
+
+
+
+
+
+
+
+
+
+

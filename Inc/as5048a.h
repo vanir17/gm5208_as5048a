@@ -9,11 +9,16 @@
 #define AS5048A_CS_PORT       GPIOC
 
 #define AS5048A_CMD_ANGLE 0x3FFE
+#define AS5048A_ERR 0xFFFF
 
 
-/* Khai báo hàm */
-void AS5048A_Init(SPI_HandleTypeDef *hspi);
+uint8_t AS5048A_Init(SPI_HandleTypeDef *hspi);
+
 uint16_t AS5048A_ReadRaw(void);
+
+void AS5048A_Prime(void);
+uint16_t AS5048A_ReadFast(void);
+
 float AS5048A_ReadAngle(void);
 float AS5048A_ReadRad(void);
 
