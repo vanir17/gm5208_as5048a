@@ -11,6 +11,7 @@
  * AS2212 13T 1000KV thường là motor 14 cực (7 cặp cực) - KIỂM TRA LẠI với motor thực tế của bạn. */
 #define FOC_POLE_PAIRS      7
 #define FOC_ENCODER_CPR     16384.0f   // AS5047: 14-bit = 16384 count / vòng cơ khí
+#define _2PI 6.28318530718f
 
 /* Đổi thành -1 nếu sau khi chạy closed-loop, dòng Iq/Id không bám được setpoint hoặc
  * motor có xu hướng tăng tốc mất kiểm soát (dấu hiệu kinh điển của sai chiều encoder
@@ -54,4 +55,13 @@ void FOC_M1_EmergencyStop(void);
 void M1_OpenLoopAlign(float align_voltage_ratio, uint32_t hold_time_ms);
 
 void FOC_VoltageMode_Step(float vq_ratio);
+
+void FOC_OpenLoopSpin(float vq, float elec_speed_rad_s, uint32_t ms);
+
+void FOC_OpenLoopSpin1(float vq, float elec_speed_rad_s, uint32_t ms);
+void DWT_Init(void);
+
+void DWT_Delay_us(uint32_t us);
+
+
 #endif /* FOC_H */

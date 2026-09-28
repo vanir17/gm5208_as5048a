@@ -49,7 +49,6 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/foc.c
     Src/as5047.c
     Src/as5048a.c
-    Src/angle_filter.c
 )
 
 # Add include paths

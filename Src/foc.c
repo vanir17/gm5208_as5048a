@@ -25,6 +25,7 @@
 #define DUTY_MIN             0.02f
 #define DUTY_CEIL            0.98f
 
+
 static const float DT = 1.0f / FOC_LOOP_FREQ_HZ;
 
 /* ===================== Trạng thái nội bộ ===================== */
@@ -33,11 +34,18 @@ static float s_offset_ib = 2048.0f;
 static float s_offset_ic = 2048.0f;
 
 static volatile float s_theta = 0.0f;
-static volatile int32_t s_encoder_offset_raw = 0; // giá trị AS5047 raw tại theta_dien = 0
+static volatile int32_t s_encoder_offset_raw = 0; // giá trị AS5048a raw tại theta_elec = 0
+volatile float s_encoder_offset_rad;
+extern float angle_filtered_rad;
 static volatile float s_id_target = 0.0f;
 volatile float s_iq_target = 0.0f;
 volatile float s_id_meas = 0.0f;
 volatile float s_iq_meas = 0.0f;
+
+
+volatile uint32_t g_dbg_ccr1 = 0;
+volatile uint32_t g_dbg_ccr2 = 0;
+volatile uint32_t g_dbg_ccr3 = 0;
 
 typedef struct {
     float kp, ki;
@@ -84,13 +92,20 @@ static void SetPhaseDuty(float ua, float ub, float uc)
     float duty_b = 0.5f + ub;
     float duty_c = 0.5f + uc;
 
-    if (duty_a < DUTY_MIN) duty_a = DUTY_MIN; if (duty_a > DUTY_CEIL) duty_a = DUTY_CEIL;
-    if (duty_b < DUTY_MIN) duty_b = DUTY_MIN; if (duty_b > DUTY_CEIL) duty_b = DUTY_CEIL;
-    if (duty_c < DUTY_MIN) duty_c = DUTY_MIN; if (duty_c > DUTY_CEIL) duty_c = DUTY_CEIL;
+    if (duty_a < DUTY_MIN) duty_a = DUTY_MIN; 
+    if (duty_a > DUTY_CEIL) duty_a = DUTY_CEIL;
+    if (duty_b < DUTY_MIN) duty_b = DUTY_MIN; 
+    if (duty_b > DUTY_CEIL) duty_b = DUTY_CEIL;
+    if (duty_c < DUTY_MIN) duty_c = DUTY_MIN; 
+    if (duty_c > DUTY_CEIL) duty_c = DUTY_CEIL;
 
     TIM8->CCR1 = (uint32_t)(duty_a * PWM_PERIOD);
     TIM8->CCR2 = (uint32_t)(duty_b * PWM_PERIOD);
     TIM8->CCR3 = (uint32_t)(duty_c * PWM_PERIOD);
+
+    g_dbg_ccr1 = TIM8->CCR1;
+    g_dbg_ccr2 = TIM8->CCR2;
+    g_dbg_ccr3 = TIM8->CCR3;
 }
 
 void FOC_M1_EmergencyStop(void)
@@ -174,20 +189,36 @@ void FOC_M1_SetElectricalAngle(float theta_rad) { s_theta = theta_rad; }
 float FOC_M1_GetElectricalAngle(void) { return s_theta; }
 
 /* Đọc AS5047, quy đổi ra góc điện (rad, đã trừ offset, nhân số cặp cực, wrap [0,2pi)) */
-static float ReadElectricalAngleFromEncoder(void)
+// static inline float ReadElectricalAngleFromEncoder(void)
+// {
+//     int32_t raw = (int32_t)AS5048A_ReadRaw();
+//     int32_t delta = raw - s_encoder_offset_raw;
+
+//     /* wrap delta về khoảng [0, CPR) để xử lý điểm quay vòng qua 0/16383 */
+//     delta &= 0x3FFF;
+
+//     float mech_angle = ((float)delta / FOC_ENCODER_CPR) * _2PI_F;
+//     float theta_e = fmodf(mech_angle * (float)FOC_POLE_PAIRS * (float)FOC_ENCODER_DIR, _2PI_F);
+//     if (theta_e < 0.0f) theta_e += _2PI_F;
+//     return theta_e;
+// }
+static inline float ReadElectricalAngleFromEncoder(void)
 {
-    int32_t raw = (int32_t)AS5048A_ReadRaw();
-    int32_t delta = raw - s_encoder_offset_raw;
+    // s_encoder_offset_rad là offset quy đổi ra radian sau bước Align:
+    s_encoder_offset_rad = ((float)s_encoder_offset_raw / 16384.0f) * _2PI_F;
+    float mech_angle = angle_filtered_rad - s_encoder_offset_rad;
 
-    /* wrap delta về khoảng [0, CPR) để xử lý điểm quay vòng qua 0/16383 */
-    delta &= 0x3FFF;
+    // Tính góc điện có xét đến chiều encoder (+1 hoặc -1)
+    float theta_e = mech_angle * (float)FOC_POLE_PAIRS * (float)FOC_ENCODER_DIR;
 
-    float mech_angle = ((float)delta / FOC_ENCODER_CPR) * _2PI_F;
-    float theta_e = fmodf(mech_angle * (float)FOC_POLE_PAIRS * (float)FOC_ENCODER_DIR, _2PI_F);
-    if (theta_e < 0.0f) theta_e += _2PI_F;
+    // Chuẩn hóa theta_e về dải [0, 2*PI)
+    theta_e = fmodf(theta_e, _2PI_F);
+    if (theta_e < 0.0f) {
+        theta_e += _2PI_F;
+    }
+
     return theta_e;
 }
-
 void FOC_M1_SetIqTarget(float iq_amps)
 {
     if (iq_amps > IQ_MAX)  iq_amps = IQ_MAX;
@@ -345,4 +376,65 @@ void FOC_VoltageMode_Step(float vq_ratio)
 
     // 4. Xuất duty cycle
     SetPhaseDuty(v_a, v_b, v_c);
+}
+
+void FOC_OpenLoopSpin(float vq, float elec_speed_rad_s, uint32_t ms)
+{
+    float theta = 0.0f;
+    const float dt = 1.0f / 8000.0f; // sửa theo tần số ISR thực tế
+    uint32_t t0 = HAL_GetTick();
+    while (HAL_GetTick() - t0 < ms) {
+        theta += elec_speed_rad_s * dt;
+        if (theta > _2PI_F) theta -= _2PI_F;
+        float s = sinf(theta), c = cosf(theta);
+        float va = -vq * s;
+        float vb = -0.5f * va + 0.86602540378f * (vq * c);
+        float vc = -0.5f * va - 0.86602540378f * (vq * c);
+        SetPhaseDuty(va, vb, vc);
+        // delay đúng dt (dùng DWT hoặc timer)
+    }
+}
+
+
+
+void FOC_OpenLoopSpin1(float vq, float elec_speed_rad_s, uint32_t ms)
+{
+    float theta = 0.0f;
+    const float dt = 0.000125f; // 125 us (8 kHz)
+    uint32_t t0 = HAL_GetTick();
+
+    while ((HAL_GetTick() - t0) < ms) {
+        theta += elec_speed_rad_s * dt;
+        if (theta >= _2PI) {
+            theta -= _2PI;
+        } else if (theta < 0.0f) {
+            theta += _2PI;
+        }
+
+        float s = sinf(theta);
+        float c = cosf(theta);
+
+        float va = -vq * s;
+        float vb = -0.5f * va + 0.86602540378f * (vq * c);
+        float vc = -0.5f * va - 0.86602540378f * (vq * c);
+
+        SetPhaseDuty(va, vb, vc);
+
+        // DELAY CHÍNH XÁC 125 MICROSECOND ĐỂ ĐÚNG CHU KỲ dt
+        DWT_Delay_us(125);
+    }
+
+    // Kết thúc: hạ duty về 0 để ngắt dòng giữ mát cuộn dây
+    SetPhaseDuty(0.0f, 0.0f, 0.0f);
+}
+
+void DWT_Init(void) {
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+}
+
+void DWT_Delay_us(uint32_t us) {
+    uint32_t start = DWT->CYCCNT;
+    uint32_t ticks = us * (SystemCoreClock / 1000000UL); // 168 ticks mỗi microsecond
+    while ((DWT->CYCCNT - start) < ticks);
 }

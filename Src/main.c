@@ -21,12 +21,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <math.h>
-#include <stdio.h>
 #include "drv8301.h"
-#include "as5047.h"
 #include "foc.h"
 #include "as5048a.h"
-#include "angle_filter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,8 +35,9 @@
 /* USER CODE BEGIN PD */
 #define _2PI 6.28318530718f
 #define CALIB_SAMPLES 2048
+#define CPR_14BIT           16384.0f
 
-#define SMA_WINDOW_SIZE 5
+#define SMA_WINDOW_SIZE 10
 typedef struct {
     float buffer[SMA_WINDOW_SIZE];
     float sum;
@@ -82,19 +80,55 @@ volatile uint16_t g_offset_ic = 0;
 uint8_t g_calib_success = 0;
 volatile float angle_deg = 0.0f;
 
+volatile float g_target_vq = 0.2f; 
 
+AngleFilter_SMA angle_filter;
 
+void AngleFilter_Init(AngleFilter_SMA *f, float initial_rad) {
+    f->sum = initial_rad * SMA_WINDOW_SIZE;
+    for (int i = 0; i < SMA_WINDOW_SIZE; i++) {
+        f->buffer[i] = initial_rad;
+    }
+    f->index = 0;
+    f->count = SMA_WINDOW_SIZE;
+    f->last_raw = initial_rad;
+    f->unwrapped_angle = initial_rad;
+}
 
+// Cập nhật góc theo Radian
+float AngleFilter_Update(AngleFilter_SMA *f, float raw_rad) {
+    // 1. Unwrap góc tránh lỗi khi nhảy qua biên 0 <-> 2*PI
+    float delta = raw_rad - f->last_raw;
+    if (delta > (float)M_PI) {
+        delta -= _2PI;
+    } else if (delta < -(float)M_PI) {
+        delta += _2PI;
+    }
+    
+    f->unwrapped_angle += delta;
+    f->last_raw = raw_rad;
 
-volatile float test_angle_rad = 0.0f;
-volatile float test_velocity_rad_s = 0.0f;
-volatile uint16_t test_raw_counts = 0;
+    // 2. Cập nhật cửa sổ trượt O(1)
+    f->sum -= f->buffer[f->index];
+    f->buffer[f->index] = f->unwrapped_angle;
+    f->sum += f->unwrapped_angle;
 
-volatile float test_angle_degree = 0.0f;
+    f->index = (f->index + 1) % SMA_WINDOW_SIZE;
 
-static AngleFilterPLL_t encoder_pll;
+    // 3. Tính trung bình và chuẩn hóa về dải [0, 2*PI)
+    float filtered_continuous = f->sum / (float)SMA_WINDOW_SIZE;
+    float filtered_rad = fmodf(filtered_continuous, _2PI);
+    if (filtered_rad < 0.0f) {
+        filtered_rad += _2PI;
+    }
 
+    return filtered_rad;
+}
 
+volatile float angle_filtered_rad = 0.0f;
+volatile float angle_filtered_deg = 0.0f;
+volatile uint16_t raw_filtered = 0;
+extern float s_encoder_offset_rad;         // Góc offset radian lưu sau khi chạy align
 /* USER CODE END 0 */
 
 /**
@@ -112,6 +146,7 @@ int main(void)
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
+
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
@@ -140,16 +175,50 @@ int main(void)
   MX_TIM5_Init();
   MX_TIM13_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_Base_Start_IT(&htim13);
   AS5048A_Init(&hspi3);
-  HAL_Delay(50);
 
-  test_raw_counts = AS5048A_ReadRaw();
+  volatile uint16_t raw_init = 0xFFFF;
+  while (raw_init == 0xFFFF) 
+  {
+      raw_init = AS5048A_ReadRaw();
+      HAL_Delay(1);
+  }
 
-  AngleFilter_Init(&encoder_pll, 16384.0f, 0.001f, 20.0f, (float)test_raw_counts);
+  float initial_rad = ((float) raw_init / 16384.0f) * _2PI;
+  AngleFilter_Init(&angle_filter, initial_rad);
 
-  HAL_TIM_Base_Start_IT(&htim1);
+  g_drv_status = DRV8301_M1_Init(DRV8301_GAIN_20VpV);
+  if(g_drv_status != 0)
+  {
+    Error_Handler();
+  } 
 
+  //Enable EN_Gate for Motor 1
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+  HAL_Delay(10);
+
+  //Enable TIM8 for controlling Motor 1
+  HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_1);
+  HAL_TIMEx_PWMN_Start(&htim8, TIM_CHANNEL_1);
+
+  HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_2);
+  HAL_TIMEx_PWMN_Start(&htim8, TIM_CHANNEL_2);
+
+  HAL_TIM_PWM_Start(&htim8, TIM_CHANNEL_3);
+  HAL_TIMEx_PWMN_Start(&htim8, TIM_CHANNEL_3);
+
+  __HAL_TIM_ENABLE(&htim8);
+
+
+  //Motor 1 Init
+  FOC_M1_Init();
+  // M1_OpenLoopAlign(0.15f, 1000);
+  TIM8->BDTR |= TIM_BDTR_MOE; //Enable H Bridge
+
+  //Enable TIM8 for Encoder AS5048A
+  // HAL_TIM_Base_Start_IT(&htim8);
+
+  DWT_Init();
   /* USER CODE END 2 */
 
 
@@ -158,7 +227,25 @@ int main(void)
   
   while(1)
   {
+    // uint16_t raw_current = AS5048A_ReadRaw();
 
+    //   // 2. Chỉ lọc khi frame SPI hợp lệ (không dính cờ lỗi)
+    //   if (raw_current != 0xFFFF) 
+    //   {
+    //       g_enc_raw = raw_current;
+
+    //       // Chuyển raw sang radian
+    //       float raw_rad = ((float)raw_current / 16384.0f) * _2PI;
+
+    //       // 3. Đưa qua SMA để lọc
+    //       angle_filtered_rad = AngleFilter_Update(&angle_filter, raw_rad);
+
+    //       // 4. Suy ra các định dạng khác từ giá trị đã lọc
+    //       angle_filtered_deg = (angle_filtered_rad / _2PI) * 360.0f;
+    //       raw_filtered = (uint16_t)((angle_filtered_rad / _2PI) * 16384.0f);
+    //   }
+    FOC_OpenLoopSpin1(0.2f, 60.0f, 40000);
+    // HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -227,29 +314,38 @@ void SystemClock_Config(void)
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if(htim->Instance == TIM1)
+  if(htim->Instance == TIM8)
   {
-    static uint8_t prescaler_20k_to_1k = 0;
+    uint16_t raw_current = AS5048A_ReadRaw();
 
-    if(++prescaler_20k_to_1k >= 20)
+    if(raw_current != 0xFFFF)
     {
-      prescaler_20k_to_1k = 0;
-      test_raw_counts = AS5048A_ReadRaw();
+      g_enc_raw = raw_current;
 
-      AngleFilter_Update(&encoder_pll, (float)test_raw_counts);
+      //Raw ==> Radian
+      float raw_rad = ((float)raw_current * (1.0f / 16384.0f)) * _2PI;
 
-      test_angle_rad = AngleFilter_GetAngleRad(&encoder_pll);
-      test_angle_degree = AngleFilter_GetAngleDeg(&encoder_pll);
-      test_velocity_rad_s = AngleFilter_GetVelocityRad_s(&encoder_pll);
+      // SMA filter
+      angle_filtered_rad = AngleFilter_Update(&angle_filter, raw_rad);
+
+      angle_filtered_deg = (angle_filtered_rad * (1.0f / _2PI)) * 360.0f;
+      raw_filtered = (uint16_t)((angle_filtered_rad * (1.0f / _2PI)) * CPR_14BIT);
+
+       // 4. Chạy FOC Voltage Mode với target hiện tại
+      FOC_VoltageMode_Step(g_target_vq);
+
+
+
     }
   }
-  /* USER CODE BEGIN Callback 1 */
-  if (htim->Instance == TIM14) 
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM14)
   {
     HAL_IncTick();
   }
+  /* USER CODE BEGIN Callback 1 */
+
   /* USER CODE END Callback 1 */
 }
 
