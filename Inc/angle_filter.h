@@ -39,6 +39,10 @@ float AngleFilter_GetAngleCounts(const AngleFilterPLL_t *filter);
 
 float AngleFilter_GetVelocityCounts_s(const AngleFilterPLL_t *filter);
 
+float AngleFilter_GetAngleDeg(const AngleFilterPLL_t *filter);
+
+float AngleFilter_GetVelocityDeg_s(const AngleFilterPLL_t *filter);
+
 
 #ifdef __cplusplus
 }

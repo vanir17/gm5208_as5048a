@@ -373,5 +373,9 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+extern TIM_HandleTypeDef htim1;
+void TIM1_UP_TIM10_IRQHandler(void)
+{
+  HAL_TIM_IRQHandler(&htim1);
+}
 /* USER CODE END 1 */

@@ -54,19 +54,15 @@ void AngleFilter_Update(AngleFilterPLL_t *filter, float raw_count)
     filter->pos_estimate_counts += filter->ts * filter->pll_kp * delta_pos;
     filter->vel_estimate_counts += filter->ts * filter->pll_ki * delta_pos;
 
-    while(filter->pos_estimate_counts >= filter->cpr)
+    if (filter->pos_estimate_counts >= filter->cpr)
     {
         filter->pos_estimate_counts -= filter->cpr;
     }
-    while(filter->pos_estimate_counts < 0.0f)
+    else if (filter->pos_estimate_counts < 0.0f)
     {
         filter->pos_estimate_counts += filter->cpr;
     }
 
-    if(fabsf(filter->vel_estimate_counts) < filter->snap_threshold)
-    {
-        filter->vel_estimate_counts = 0.0f;
-    }
 }
 
 float AngleFilter_GetAngleRad(const AngleFilterPLL_t *filter) {
@@ -83,4 +79,12 @@ float AngleFilter_GetAngleCounts(const AngleFilterPLL_t *filter) {
 
 float AngleFilter_GetVelocityCounts_s(const AngleFilterPLL_t *filter) {
     return filter->vel_estimate_counts;
+}
+
+float AngleFilter_GetAngleDeg(const AngleFilterPLL_t *filter) {
+    return (filter->pos_estimate_counts / filter->cpr) * 360.0f;
+}
+
+float AngleFilter_GetVelocityDeg_s(const AngleFilterPLL_t *filter) {
+    return (filter->vel_estimate_counts / filter->cpr) * 360.0f;
 }

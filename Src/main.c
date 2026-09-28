@@ -21,10 +21,12 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <math.h>
+#include <stdio.h>
 #include "drv8301.h"
 #include "as5047.h"
 #include "foc.h"
 #include "as5048a.h"
+#include "angle_filter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -81,52 +83,18 @@ uint8_t g_calib_success = 0;
 volatile float angle_deg = 0.0f;
 
 
-AngleFilter_SMA angle_filter;
 
-void AngleFilter_Init(AngleFilter_SMA *f, float initial_rad) {
-    f->sum = initial_rad * SMA_WINDOW_SIZE;
-    for (int i = 0; i < SMA_WINDOW_SIZE; i++) {
-        f->buffer[i] = initial_rad;
-    }
-    f->index = 0;
-    f->count = SMA_WINDOW_SIZE;
-    f->last_raw = initial_rad;
-    f->unwrapped_angle = initial_rad;
-}
 
-// Cập nhật góc theo Radian
-float AngleFilter_Update(AngleFilter_SMA *f, float raw_rad) {
-    // 1. Unwrap góc tránh lỗi khi nhảy qua biên 0 <-> 2*PI
-    float delta = raw_rad - f->last_raw;
-    if (delta > (float)M_PI) {
-        delta -= _2PI;
-    } else if (delta < -(float)M_PI) {
-        delta += _2PI;
-    }
-    
-    f->unwrapped_angle += delta;
-    f->last_raw = raw_rad;
 
-    // 2. Cập nhật cửa sổ trượt O(1)
-    f->sum -= f->buffer[f->index];
-    f->buffer[f->index] = f->unwrapped_angle;
-    f->sum += f->unwrapped_angle;
+volatile float test_angle_rad = 0.0f;
+volatile float test_velocity_rad_s = 0.0f;
+volatile uint16_t test_raw_counts = 0;
 
-    f->index = (f->index + 1) % SMA_WINDOW_SIZE;
+volatile float test_angle_degree = 0.0f;
 
-    // 3. Tính trung bình và chuẩn hóa về dải [0, 2*PI)
-    float filtered_continuous = f->sum / (float)SMA_WINDOW_SIZE;
-    float filtered_rad = fmodf(filtered_continuous, _2PI);
-    if (filtered_rad < 0.0f) {
-        filtered_rad += _2PI;
-    }
+static AngleFilterPLL_t encoder_pll;
 
-    return filtered_rad;
-}
 
-volatile float angle_filtered_rad = 0.0f;
-volatile float angle_filtered_deg = 0.0f;
-volatile uint16_t raw_filtered = 0;
 /* USER CODE END 0 */
 
 /**
@@ -144,42 +112,6 @@ int main(void)
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
-void AngleFilter_Init(AngleFilter_SMA *f, float initial_angle) {
-    f->sum = initial_angle * SMA_WINDOW_SIZE;
-    for (int i = 0; i < SMA_WINDOW_SIZE; i++) {
-        f->buffer[i] = initial_angle;
-    }
-    f->index = 0;
-    f->count = SMA_WINDOW_SIZE;
-    f->last_raw = initial_angle;
-    f->unwrapped_angle = initial_angle;
-}
-
-float AngleFilter_Update(AngleFilter_SMA *f, float raw_angle) {
-    // 1. Tính delta và unwrap để theo dõi góc liên tục
-    float delta = raw_angle - f->last_raw;
-    if (delta > 180.0f)  delta -= 360.0f;
-    else if (delta < -180.0f) delta += 360.0f;
-    
-    f->unwrapped_angle += delta;
-    f->last_raw = raw_angle;
-
-    // 2. Cập nhật cửa sổ trượt O(1)
-    f->sum -= f->buffer[f->index];
-    f->buffer[f->index] = f->unwrapped_angle;
-    f->sum += f->unwrapped_angle;
-
-    f->index = (f->index + 1) % SMA_WINDOW_SIZE;
-
-    // 3. Trả về góc đã lọc (đưa lại về dải [0, 360))
-    float filtered_continuous = f->sum / SMA_WINDOW_SIZE;
-    
-    // Đưa về dải 0 - 360 nếu cần góc tuyệt đối trong 1 vòng
-    float filtered_angle = fmodf(filtered_continuous, 360.0f);
-    if (filtered_angle < 0.0f) filtered_angle += 360.0f;
-
-    return filtered_angle;
-}
   /* USER CODE BEGIN Init */
 
   /* USER CODE END Init */
@@ -208,19 +140,15 @@ float AngleFilter_Update(AngleFilter_SMA *f, float raw_angle) {
   MX_TIM5_Init();
   MX_TIM13_Init();
   /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start_IT(&htim13);
   AS5048A_Init(&hspi3);
+  HAL_Delay(50);
 
-  uint16_t raw_init = 0xFFFF;
-  while (raw_init == 0xFFFF) 
-  {
-      raw_init = AS5048A_ReadRaw();
-      HAL_Delay(1);
-  }
+  test_raw_counts = AS5048A_ReadRaw();
 
-  float initial_rad = ((float) raw_init / 16384.0f) * _2PI;
-  AngleFilter_Init(&angle_filter, initial_rad);
+  AngleFilter_Init(&encoder_pll, 16384.0f, 0.001f, 20.0f, (float)test_raw_counts);
 
-
+  HAL_TIM_Base_Start_IT(&htim1);
 
   /* USER CODE END 2 */
 
@@ -230,25 +158,7 @@ float AngleFilter_Update(AngleFilter_SMA *f, float raw_angle) {
   
   while(1)
   {
-    uint16_t raw_current = AS5048A_ReadRaw();
 
-      // 2. Chỉ lọc khi frame SPI hợp lệ (không dính cờ lỗi)
-      if (raw_current != 0xFFFF) 
-      {
-          g_enc_raw = raw_current;
-
-          // Chuyển raw sang radian
-          float raw_rad = ((float)raw_current / 16384.0f) * _2PI;
-
-          // 3. Đưa qua SMA để lọc
-          angle_filtered_rad = AngleFilter_Update(&angle_filter, raw_rad);
-
-          // 4. Suy ra các định dạng khác từ giá trị đã lọc
-          angle_filtered_deg = (angle_filtered_rad / _2PI) * 360.0f;
-          raw_filtered = (uint16_t)((angle_filtered_rad / _2PI) * 16384.0f);
-      }
-
-      HAL_Delay(10);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -319,12 +229,27 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   /* USER CODE BEGIN Callback 0 */
 
   /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM14)
+  if(htim->Instance == TIM1)
+  {
+    static uint8_t prescaler_20k_to_1k = 0;
+
+    if(++prescaler_20k_to_1k >= 20)
+    {
+      prescaler_20k_to_1k = 0;
+      test_raw_counts = AS5048A_ReadRaw();
+
+      AngleFilter_Update(&encoder_pll, (float)test_raw_counts);
+
+      test_angle_rad = AngleFilter_GetAngleRad(&encoder_pll);
+      test_angle_degree = AngleFilter_GetAngleDeg(&encoder_pll);
+      test_velocity_rad_s = AngleFilter_GetVelocityRad_s(&encoder_pll);
+    }
+  }
+  /* USER CODE BEGIN Callback 1 */
+  if (htim->Instance == TIM14) 
   {
     HAL_IncTick();
   }
-  /* USER CODE BEGIN Callback 1 */
-
   /* USER CODE END Callback 1 */
 }
 
