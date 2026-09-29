@@ -149,7 +149,7 @@ uint8_t FOC_AutoCalibrate(float v)
         total += d;
         prev = cur;
     }
-    HAL_Delay(500);   /* rotor về đúng theta = 2*pi = 0 */
+    HAL_Delay(500);   
  
     /* 3. Kiểm tra hợp lệ */
     if (fabsf(total) < 100.0f) { SetPhaseDuty(0,0,0); g_calib_err = 2; return 2; }
@@ -182,7 +182,6 @@ void FOC_VoltageMode_Step(float enc_counts, float vq)
     if (vq >  FOC_VQ_LIMIT) vq =  FOC_VQ_LIMIT;
     if (vq < -FOC_VQ_LIMIT) vq = -FOC_VQ_LIMIT;
  
-    /* Góc điện tính theo count để giữ độ chính xác float */
     float mech = enc_counts - g_enc_off_counts;
     float te = fmodf(mech * g_pp * (float)g_dir, FOC_ENCODER_CPR);
     if (te < 0.0f) te += FOC_ENCODER_CPR;
@@ -193,11 +192,9 @@ void FOC_VoltageMode_Step(float enc_counts, float vq)
     float s = sinf(theta);
     float c = cosf(theta);
  
-    /* Inverse Park với Vd = 0 */
     float v_alpha = -vq * s;
     float v_beta  =  vq * c;
  
-    /* Inverse Clarke */
     float v_a = v_alpha;
     float v_b = -0.5f * v_alpha + SQRT3_2 * v_beta;
     float v_c = -0.5f * v_alpha - SQRT3_2 * v_beta;

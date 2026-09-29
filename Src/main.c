@@ -62,7 +62,7 @@ volatile float    g_enc_filt_counts = 0.0f;
 volatile float    g_enc_filt_deg   = 0.0f;
 volatile uint16_t g_enc_err        = 0;
 volatile uint8_t  g_fault          = 0;
-volatile uint32_t g_isr_cycles     = 0;      /* so chu ky CPU cua 1 lan ngat (168 cycles = 1us) */
+volatile uint32_t g_isr_cycles     = 0;      
 
 static AngleSMA_t g_sma;
 
@@ -72,15 +72,12 @@ volatile uint16_t current_raw = 0;
 volatile float g_target_vq = 0.2f;
 
 
-
-
-
-volatile float    dbg_theta_elec = 0.0f; /* Góc điện đưa vào Park/Clarke */
+volatile float    dbg_theta_elec = 0.0f; 
 volatile float    dbg_vd = 0.0f;
 volatile float    dbg_vq = 0.0f;
-volatile uint16_t dbg_ccr1 = 0;          /* Duty cycle kênh A */
-volatile uint16_t dbg_ccr2 = 0;          /* Duty cycle kênh B */
-volatile uint16_t dbg_ccr3 = 0;          /* Duty cycle kênh C */
+volatile uint16_t dbg_ccr1 = 0;          
+volatile uint16_t dbg_ccr2 = 0;          
+volatile uint16_t dbg_ccr3 = 0;          
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/

@@ -88,25 +88,24 @@ static uint16_t Transfer(uint16_t tx)
 static inline uint16_t DecodeResponse(uint16_t resp)
 {
     if (resp == AS5048A_ERR) return AS5048A_ERR;
-    if (resp & 0x4000)       return AS5048A_ERR;   /* Cờ lỗi EF từ chip */
+    if (resp & 0x4000)       return AS5048A_ERR;   
 
-    /* Kiểm tra Even Parity nhanh không gọi libgcc */
     uint16_t p = resp;
     p ^= p >> 8;
     p ^= p >> 4;
     p ^= p >> 2;
     p ^= p >> 1;
-    if (p & 1) return AS5048A_ERR; /* Sai parity */
+    if (p & 1) return AS5048A_ERR; 
 
     return resp & 0x3FFF;
 }
 
 uint16_t AS5048A_ReadRaw(void)
 {
-    Transfer(BuildReadCommand(AS5048A_CMD_ANGLE)); /* frame 1: gửi lệnh */
+    Transfer(BuildReadCommand(AS5048A_CMD_ANGLE)); 
     Delay350ns();
 
-    return DecodeResponse(Transfer(0x0000)); /* frame 2: NOP, nhận kết quả frame 1 */
+    return DecodeResponse(Transfer(0x0000)); 
 }
 
 void AS5048A_Prime(void)
