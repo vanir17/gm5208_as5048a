@@ -4,11 +4,11 @@
 #include "main.h"
 #include "stm32f4xx_hal.h"
 
-/* Định nghĩa chân CSn tại PA3 */
+/* Định nghĩa chân CSn tại Pc4 */
 #define AS5048A_CS_PIN        GPIO_PIN_4
 #define AS5048A_CS_PORT       GPIOC
 
-#define AS5048A_CMD_ANGLE 0x3FFE
+#define AS5048A_CMD_ANGLE 0x3FFF
 #define AS5048A_ERR 0xFFFF
 
 

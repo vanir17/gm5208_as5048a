@@ -9,7 +9,7 @@
 #define FOC_LOOP_FREQ_HZ   10000.0f
 #define FOC_ENCODER_DIR     1
 #define FOC_POLE_PAIRS      7
-#define FOC_VQ_LIMIT 0.30f
+#define FOC_VQ_LIMIT 1.0f
 
 extern volatile float g_pp;
 extern volatile int32_t g_dir;

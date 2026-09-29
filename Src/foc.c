@@ -126,7 +126,7 @@ uint8_t FOC_AutoCalibrate(float v)
         SetVecAngle(v * (float)i / 100.0f, 0.0f);
         HAL_Delay(10);
     }
-    HAL_Delay(800);
+    HAL_Delay(300);
 
     float prev = ReadCountsAvg(16);
     if(prev < 0.0f)

@@ -63,9 +63,24 @@ volatile float    g_enc_filt_deg   = 0.0f;
 volatile uint16_t g_enc_err        = 0;
 volatile uint8_t  g_fault          = 0;
 volatile uint32_t g_isr_cycles     = 0;      /* so chu ky CPU cua 1 lan ngat (168 cycles = 1us) */
-volatile float    g_target_vq      = 0.50f;  
 
 static AngleSMA_t g_sma;
+
+volatile float current_angle = 0.0f;
+volatile uint16_t current_raw = 0;
+
+volatile float g_target_vq = 0.2f;
+
+
+
+
+
+volatile float    dbg_theta_elec = 0.0f; /* Góc điện đưa vào Park/Clarke */
+volatile float    dbg_vd = 0.0f;
+volatile float    dbg_vq = 0.0f;
+volatile uint16_t dbg_ccr1 = 0;          /* Duty cycle kênh A */
+volatile uint16_t dbg_ccr2 = 0;          /* Duty cycle kênh B */
+volatile uint16_t dbg_ccr3 = 0;          /* Duty cycle kênh C */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,7 +106,7 @@ static void AngleSMA_Init(AngleSMA_t *f, uint16_t raw)
 static float AngleSMA_Update(AngleSMA_t *f, uint16_t raw)
 {
   f->buf[f->idx] = raw;
-  f->idx = (uint8_t)((f->idx + 1) & SMA_WINDOW_SIZE);
+  f->idx = (uint8_t)((f->idx + 1) & (SMA_WINDOW_SIZE - 1));
 
   int32_t sum = 0;
   for(int i = 0; i < SMA_WINDOW_SIZE; i++)
@@ -113,12 +128,15 @@ static float AngleSMA_Update(AngleSMA_t *f, uint16_t raw)
 static uint16_t WaitValidRaw(void)
 {
   uint16_t r;
-
   do
   {
     r = AS5048A_ReadRaw();
-    HAL_Delay(1); 
-  } while(r == AS5048A_ERR);
+    // for(volatile int i = 0; i < 5000; i++)
+    // {
+    //   __NOP();
+    // }
+    HAL_Delay(1);
+  } while((r == AS5048A_ERR));
 
   return r;
 }
@@ -170,7 +188,6 @@ int main(void)
   MX_UART4_Init();
   MX_TIM5_Init();
   MX_TIM13_Init();
-
   /* USER CODE BEGIN 2 */
 
   CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -194,11 +211,7 @@ int main(void)
 
   //3. Set duty 50% (0V) before starting
   FOC_M1_Init();
-  SetPhaseDuty(0.0f, 0.0f, 0.0f);
-
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET); /*EN_GATE DRV8301*/
-
-
 
 
   //Enable TIM8 for controlling Motor 1
@@ -223,52 +236,24 @@ int main(void)
   AS5048A_Prime();
 
   //6. Enable TIM8 ISR Function
-  // __HAL_TIM_CLEAR_FLAG(&htim8, TIM_FLAG_UPDATE);
-  // HAL_TIM_Base_Start_IT(&htim8);
+  __HAL_TIM_CLEAR_FLAG(&htim8, TIM_FLAG_UPDATE);
+  HAL_TIM_Base_Start_IT(&htim8);
 
   /* USER CODE END 2 */
 
 
-  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  const uint32_t loop_period_cycles = 168000000 / 2000; // 2 kHz -> 84,000 clock
-  uint32_t next_exec_time = DWT->CYCCNT + loop_period_cycles;
   
   while(1)
   {
-    while ((int32_t)(DWT->CYCCNT - next_exec_time) < 0) {
-        // Có thể làm việc khác ở đây nếu cần
-    }
-    next_exec_time += loop_period_cycles;
 
-    uint32_t t0 = DWT->CYCCNT;
-
-    uint16_t raw = AS5048A_ReadFast();
-    if (raw != AS5048A_ERR)
-    {
-        g_enc_err = 0;
-        g_enc_raw = raw;
-        float ang = AngleSMA_Update(&g_sma, raw);
-        g_enc_filt_counts = ang;
-        g_enc_filt_deg = ang * (360.0f / 16384.0f);
-
-        FOC_VoltageMode_Step(ang, g_target_vq);
-    }
-    else if (++g_enc_err > ENC_ERR_LIMIT)
-    {
-        FOC_M1_EmergencyStop();
-        g_fault = 1;
-        break; // Thoát vòng lặp khi có lỗi
-    }
-
-    g_isr_cycles = DWT->CYCCNT - t0;
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+
   /* USER CODE END 3 */
 }
-
+}
 /**
   * @brief System Clock Configuration
   * @retval None
@@ -344,6 +329,9 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
       g_enc_filt_deg = ang * (360.0f / 16384.0f);
 
       FOC_VoltageMode_Step(ang, g_target_vq);
+      dbg_ccr1 = TIM8->CCR1;
+    dbg_ccr2 = TIM8->CCR2;
+    dbg_ccr3 = TIM8->CCR3;
     }
     else if( ++g_enc_err > ENC_ERR_LIMIT)
     {
